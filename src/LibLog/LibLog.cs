@@ -878,7 +878,8 @@ namespace YourRootNamespace.Logging.LogProviders
 #endif
         internal class NLogLogger
         {
-            private readonly dynamic _logger;
+            private readonly object _logger;
+            private static Action<object, object> _logMethod;
 
             private static Func<string, object, string, Exception, object> _logEventInfoFact;
 
@@ -925,11 +926,24 @@ namespace YourRootNamespace.Logging.LogProviders
                         Expression.Constant(null, typeof(IFormatProvider)), messageParam, Expression.Constant(null, typeof(object[])));
                     _logEventInfoFact = Expression.Lambda<Func<string, object, string, Exception, object>>(createLogEventInfoMethodCall,
                         loggerNameParam, levelParam, messageParam, exceptionParam).Compile();
+
+                    var loggerType = Type.GetType("NLog.Logger, NLog");
+                    if (loggerType == null)
+                    {
+                        throw new InvalidOperationException("Type NLog.Logger was not found.");
+                    }
+
+                    var logMethodCall = Expression.Call(
+                        Expression.Parameter(loggerType),
+                        loggerType.GetMethodPortable("Log", logEventInfoType),
+                        Expression.Parameter(logEventInfoType)
+                    );
+                    _logMethod = Expression.Lambda<Action<object, object>>(logMethodCall, Expression.Parameter(logEventLevelType)).Compile();
                 }
                 catch { }
             }
 
-            internal NLogLogger(dynamic logger)
+            internal NLogLogger(object logger)
             {
                 _logger = logger;
             }
@@ -972,9 +986,11 @@ namespace YourRootNamespace.Logging.LogProviders
                         s_callerStackBoundaryType = null;
 #endif
                         if (s_callerStackBoundaryType != null)
-                            _logger.Log(s_callerStackBoundaryType, _logEventInfoFact(_logger.Name, nlogLevel, messageFunc(), exception));
+                            throw new NotImplementedException();
+                        //_logger.Log(s_callerStackBoundaryType, _logEventInfoFact(_logger.Name, nlogLevel, messageFunc(), exception));
                         else
-                            _logger.Log(_logEventInfoFact(_logger.Name, nlogLevel, messageFunc(), exception));
+                            //_logger.Log(_logEventInfoFact(_logger.Name, nlogLevel, messageFunc(), exception));
+                            _logMethod(_logger, _logEventInfoFact(_logger.Name, nlogLevel, messageFunc(), exception));
                         return true;
                     }
                     return false;
