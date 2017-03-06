@@ -879,7 +879,9 @@ namespace YourRootNamespace.Logging.LogProviders
         internal class NLogLogger
         {
             private readonly object _logger;
-            private static Action<object, object> _logMethod;
+
+            private static Action<object, object> _logEvent;
+            private static Action<object, Type, object> _logEventWithStackBoundary;
 
             private static Func<string, object, string, Exception, object> _logEventInfoFact;
 
@@ -890,6 +892,15 @@ namespace YourRootNamespace.Logging.LogProviders
             private static readonly object _levelError;
             private static readonly object _levelFatal;
 
+            private static Func<object, bool> _isTraceEnabled;
+            private static Func<object, bool> _isDebugEnabled;
+            private static Func<object, bool> _isInfoEnabled;
+            private static Func<object, bool> _isWarnEnabled;
+            private static Func<object, bool> _isErrorEnabled;
+            private static Func<object, bool> _isFatalEnabled;
+
+            #region Static Initialization
+
             static NLogLogger()
             {
                 try
@@ -898,6 +909,11 @@ namespace YourRootNamespace.Logging.LogProviders
                     if (logEventLevelType == null)
                     {
                         throw new InvalidOperationException("Type NLog.LogLevel was not found.");
+                    }
+                    var loggerType = Type.GetType("NLog.Logger, NLog");
+                    if (loggerType == null)
+                    {
+                        throw new InvalidOperationException("Type NLog.Logger was not found.");
                     }
 
                     var levelFields = logEventLevelType.GetFieldsPortable().ToList();
@@ -908,40 +924,126 @@ namespace YourRootNamespace.Logging.LogProviders
                     _levelError = levelFields.First(x => x.Name == "Error").GetValue(null);
                     _levelFatal = levelFields.First(x => x.Name == "Fatal").GetValue(null);
 
-                    var logEventInfoType = Type.GetType("NLog.LogEventInfo, NLog");
-                    if (logEventInfoType == null)
-                    {
-                        throw new InvalidOperationException("Type NLog.LogEventInfo was not found.");
-                    }
-                    MethodInfo createLogEventInfoMethodInfo = logEventInfoType.GetMethodPortable("Create",
-                        logEventLevelType, typeof(string), typeof(Exception), typeof(IFormatProvider), typeof(string), typeof(object[]));
-                    ParameterExpression loggerNameParam = Expression.Parameter(typeof(string));
-                    ParameterExpression levelParam = Expression.Parameter(typeof(object));
-                    ParameterExpression messageParam = Expression.Parameter(typeof(string));
-                    ParameterExpression exceptionParam = Expression.Parameter(typeof(Exception));
-                    UnaryExpression levelCast = Expression.Convert(levelParam, logEventLevelType);
-                    MethodCallExpression createLogEventInfoMethodCall = Expression.Call(null,
-                        createLogEventInfoMethodInfo,
-                        levelCast, loggerNameParam, exceptionParam,
-                        Expression.Constant(null, typeof(IFormatProvider)), messageParam, Expression.Constant(null, typeof(object[])));
-                    _logEventInfoFact = Expression.Lambda<Func<string, object, string, Exception, object>>(createLogEventInfoMethodCall,
-                        loggerNameParam, levelParam, messageParam, exceptionParam).Compile();
+                    InitializeIsEnabled();
 
-                    var loggerType = Type.GetType("NLog.Logger, NLog");
-                    if (loggerType == null)
-                    {
-                        throw new InvalidOperationException("Type NLog.Logger was not found.");
-                    }
-
-                    var logMethodCall = Expression.Call(
-                        Expression.Parameter(loggerType),
-                        loggerType.GetMethodPortable("Log", logEventInfoType),
-                        Expression.Parameter(logEventInfoType)
-                    );
-                    _logMethod = Expression.Lambda<Action<object, object>>(logMethodCall, Expression.Parameter(logEventLevelType)).Compile();
+                    if (InitializeWithLogEvent())
+                        return;
+                    InitializeWithoutLogEvent();
                 }
                 catch { }
             }
+
+            static void InitializeIsEnabled()
+            {
+                var loggerType = Type.GetType("NLog.Logger, NLog");
+                var loggerParam = Expression.Parameter(typeof(object));
+
+                _isTraceEnabled = Expression.Lambda<Func<object, bool>>(
+                    Expression.Call(
+                        Expression.Convert(loggerParam, loggerType),
+                        loggerType.GetPropertyPortable("IsTraceEnabled").GetGetMethod()
+                    ),
+                    loggerParam
+                ).Compile();
+
+                _isDebugEnabled = Expression.Lambda<Func<object, bool>>(
+                    Expression.Call(
+                        Expression.Convert(loggerParam, loggerType),
+                        loggerType.GetPropertyPortable("IsDebugEnabled").GetGetMethod()
+                    ),
+                    loggerParam
+                ).Compile();
+
+                _isInfoEnabled = Expression.Lambda<Func<object, bool>>(
+                    Expression.Call(
+                        Expression.Convert(loggerParam, loggerType),
+                        loggerType.GetPropertyPortable("IsInfoEnabled").GetGetMethod()
+                    ),
+                    loggerParam
+                ).Compile();
+
+                _isWarnEnabled = Expression.Lambda<Func<object, bool>>(
+                    Expression.Call(
+                        Expression.Convert(loggerParam, loggerType),
+                        loggerType.GetPropertyPortable("IsWarnEnabled").GetGetMethod()
+                    ),
+                    loggerParam
+                ).Compile();
+
+                _isErrorEnabled = Expression.Lambda<Func<object, bool>>(
+                    Expression.Call(
+                        Expression.Convert(loggerParam, loggerType),
+                        loggerType.GetPropertyPortable("IsErrorEnabled").GetGetMethod()
+                    ),
+                    loggerParam
+                ).Compile();
+
+                _isFatalEnabled = Expression.Lambda<Func<object, bool>>(
+                    Expression.Call(
+                        Expression.Convert(loggerParam, loggerType),
+                        loggerType.GetPropertyPortable("IsFatalEnabled").GetGetMethod()
+                    ),
+                    loggerParam
+                ).Compile();
+            }
+
+            static bool InitializeWithLogEvent()
+            {
+                var logEventInfoType = Type.GetType("NLog.LogEventInfo, NLog");
+                if (logEventInfoType == null)
+                    return false;
+
+                var loggerType = Type.GetType("NLog.Logger, NLog");
+                var logEventLevelType = Type.GetType("NLog.LogLevel, NLog");
+
+                var createLogEventInfoMethodInfo = logEventInfoType.GetMethodPortable("Create",
+                    logEventLevelType, typeof(string), typeof(Exception), typeof(IFormatProvider), typeof(string), typeof(object[]));
+                var loggerNameParam = Expression.Parameter(typeof(string));
+                var levelParam = Expression.Parameter(typeof(object));
+                var messageParam = Expression.Parameter(typeof(string));
+                var exceptionParam = Expression.Parameter(typeof(Exception));
+                var levelCast = Expression.Convert(levelParam, logEventLevelType);
+                var createLogEventInfoMethodCall = Expression.Call(null,
+                    createLogEventInfoMethodInfo,
+                    levelCast, loggerNameParam, exceptionParam,
+                    Expression.Constant(null, typeof(IFormatProvider)), messageParam, Expression.Constant(null, typeof(object[])));
+                _logEventInfoFact = Expression.Lambda<Func<string, object, string, Exception, object>>(createLogEventInfoMethodCall,
+                    loggerNameParam, levelParam, messageParam, exceptionParam).Compile();
+
+                var loggerParam = Expression.Parameter(typeof(object));
+                var logEventInfoParam = Expression.Parameter(typeof(object));
+                _logEvent = Expression.Lambda<Action<object, object>>(
+                    Expression.Call(
+                        Expression.Convert(loggerParam, loggerType),
+                        loggerType.GetMethodPortable("Log", logEventInfoType),
+                        Expression.Convert(logEventInfoParam, logEventInfoType)
+                    ),
+                    loggerParam,
+                    logEventInfoParam
+                ).Compile();
+
+                var typeParam = Expression.Parameter(typeof(Type));
+                _logEventWithStackBoundary = Expression.Lambda<Action<object, Type, object>>(
+                    Expression.Call(
+                        Expression.Convert(loggerParam, loggerType),
+                        loggerType.GetMethodPortable("Log", typeof(Type), logEventInfoType),
+                        typeParam,
+                        Expression.Convert(logEventInfoParam, logEventInfoType)
+                    ),
+                    loggerParam,
+                    typeParam,
+                    logEventInfoParam
+                ).Compile();
+
+                return true;
+            }
+
+            static void InitializeWithoutLogEvent()
+            {
+                throw new NotImplementedException();                
+            }
+
+            #endregion Static Initialization
 
             internal NLogLogger(object logger)
             {
@@ -985,17 +1087,20 @@ namespace YourRootNamespace.Logging.LogProviders
 #else
                         s_callerStackBoundaryType = null;
 #endif
+                        var logEventInfo = _logEventInfoFact("yo", nlogLevel, messageFunc(), exception);
                         if (s_callerStackBoundaryType != null)
-                            throw new NotImplementedException();
+                            Log(s_callerStackBoundaryType, logEventInfo);
                         //_logger.Log(s_callerStackBoundaryType, _logEventInfoFact(_logger.Name, nlogLevel, messageFunc(), exception));
                         else
                             //_logger.Log(_logEventInfoFact(_logger.Name, nlogLevel, messageFunc(), exception));
-                            _logMethod(_logger, _logEventInfoFact(_logger.Name, nlogLevel, messageFunc(), exception));
+                            Log(logEventInfo);
                         return true;
                     }
                     return false;
                 }
 
+                throw new NotImplementedException();
+                /*
                 if(exception != null)
                 {
                     return LogException(logLevel, messageFunc, exception);
@@ -1046,6 +1151,7 @@ namespace YourRootNamespace.Logging.LogProviders
                         break;
                 }
                 return false;
+                */
             }
 
             private static bool IsInTypeHierarchy(Type currentType, Type checkType)
@@ -1061,6 +1167,7 @@ namespace YourRootNamespace.Logging.LogProviders
                 return false;
             }
 
+            /*
             [SuppressMessage("Microsoft.Maintainability", "CA1502:AvoidExcessiveComplexity")]
             private bool LogException(LogLevel logLevel, Func<string> messageFunc, Exception exception)
             {
@@ -1111,23 +1218,25 @@ namespace YourRootNamespace.Logging.LogProviders
                 }
                 return false;
             }
-
+            */
             private bool IsLogLevelEnable(LogLevel logLevel)
             {
                 switch (logLevel)
                 {
+                    case LogLevel.Trace:
+                        return IsTraceEnabled();
                     case LogLevel.Debug:
-                        return _logger.IsDebugEnabled;
+                        return IsDebugEnabled();
                     case LogLevel.Info:
-                        return _logger.IsInfoEnabled;
+                        return IsInfoEnabled();
                     case LogLevel.Warn:
-                        return _logger.IsWarnEnabled;
+                        return IsWarnEnabled();
                     case LogLevel.Error:
-                        return _logger.IsErrorEnabled;
+                        return IsErrorEnabled();
                     case LogLevel.Fatal:
-                        return _logger.IsFatalEnabled;
+                        return IsFatalEnabled();
                     default:
-                        return _logger.IsTraceEnabled;
+                        throw new ArgumentOutOfRangeException();
                 }
             }
 
@@ -1151,6 +1260,20 @@ namespace YourRootNamespace.Logging.LogProviders
                         throw new ArgumentOutOfRangeException("logLevel", logLevel, null);
                 }
             }
+
+            #region Method Wrappers
+
+            void Log(object logEvent) => _logEvent(_logger, logEvent);
+            void Log(Type wrapperType, object logEvent) => _logEventWithStackBoundary(_logger, wrapperType, logEvent);
+
+            bool IsTraceEnabled() => _isTraceEnabled(_logger);
+            bool IsDebugEnabled() => _isDebugEnabled(_logger);
+            bool IsInfoEnabled()  => _isInfoEnabled(_logger);
+            bool IsWarnEnabled()  => _isWarnEnabled(_logger);
+            bool IsErrorEnabled() => _isErrorEnabled(_logger);
+            bool IsFatalEnabled() => _isFatalEnabled(_logger);
+
+            #endregion Method Wrappers
         }
     }
 
